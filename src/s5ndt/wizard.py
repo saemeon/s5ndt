@@ -3,10 +3,17 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import dash
 from dash import Input, Output, dcc, html
+
+
+@dataclass
+class Wizard:
+    div: html.Div
+    open_input: Input  # pass to Config.register_populate_callback
 
 
 def build_wizard(
@@ -14,7 +21,7 @@ def build_wizard(
     body: Any,
     trigger_label: str = "Open",
     title: str = "",
-) -> html.Div:
+) -> Wizard:
     """Wrap *body* in a modal wizard popup.
 
     Parameters
@@ -30,14 +37,16 @@ def build_wizard(
 
     Returns
     -------
-    html.Div
-        Contains the trigger button, a ``dcc.Store`` for open/close state,
-        and the modal overlay + dialog. Place it anywhere in the layout.
+    Wizard
+        ``.div`` — place anywhere in the layout.
+        ``.open_input`` — pass to :meth:`Config.register_populate_callback`
+        so hooked fields are populated when the wizard opens.
     """
     trigger_id = f"_s5ndt_wiz_trigger_{wizard_id}"
     close_id = f"_s5ndt_wiz_close_{wizard_id}"
     store_id = f"_s5ndt_wiz_store_{wizard_id}"
     modal_id = f"_s5ndt_wiz_modal_{wizard_id}"
+    open_input = Input(store_id, "data")
 
     modal = html.Div(
         id=modal_id,
@@ -95,9 +104,9 @@ def build_wizard(
 
     @dash.callback(
         Output(modal_id, "style"),
-        Input(store_id, "data"),
+        open_input,
     )
     def update_visibility(is_open):
         return {"display": "block"} if is_open else {"display": "none"}
 
-    return html.Div([html.Button(trigger_label, id=trigger_id), store, modal])
+    return Wizard(div=html.Div([html.Button(trigger_label, id=trigger_id), store, modal]), open_input=open_input)

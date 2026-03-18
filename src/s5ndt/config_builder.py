@@ -5,11 +5,63 @@ from __future__ import annotations
 
 import inspect
 import types
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
-from dash import State, dcc, html
+import dash
+from dash import Input, Output, State, dcc, html
+
+
+# --- hook protocol ---
+
+
+class FieldHook:
+    """Base class for field hooks.
+
+    Subclass to define fields whose default value and/or submitted value
+    are derived from runtime Dash state rather than a static default.
+
+    Override :meth:`required_states` to declare which Dash ``State`` objects
+    your hook needs. Their values are passed positionally to :meth:`get_default`
+    and :meth:`transform`.
+    """
+
+    def required_states(self) -> list[State]:
+        """Dash ``State`` objects this hook needs at runtime."""
+        return []
+
+    def get_default(self, *state_values: Any) -> Any:
+        """Compute the initial field value from resolved state values."""
+        return None
+
+    def transform(self, value: Any, *state_values: Any) -> Any:
+        """Transform the user-submitted value before it reaches the renderer."""
+        return value
+
+
+class FromComponent(FieldHook):
+    """Read a component property as the field default.
+
+    Parameters
+    ----------
+    component :
+        Any Dash component with an ``.id`` attribute.
+    prop :
+        The component property to read (e.g. ``"value"``, ``"figure"``).
+    """
+
+    def __init__(self, component: Any, prop: str):
+        self._state = State(component.id, prop)
+
+    def required_states(self) -> list[State]:
+        return [self._state]
+
+    def get_default(self, value: Any) -> Any:
+        return value
+
+
+# --- field descriptor ---
 
 
 @dataclass
@@ -19,16 +71,56 @@ class _Field:
     default: Any
     args: tuple = ()
     optional: bool = False  # True when annotation is Optional[T] / T | None
+    hook: FieldHook | None = field(default=None, repr=False)
+
+
+# --- Config ---
 
 
 class Config:
-    def __init__(self, div: html.Div, states: list[State], fields: list[_Field]):
+    def __init__(
+        self,
+        div: html.Div,
+        states: list[State],
+        fields: list[_Field],
+        config_id: str,
+    ):
         self.div = div
         self.states = states
         self._fields = fields
+        self._config_id = config_id
 
     def build_kwargs(self, values: tuple) -> dict:
         return _build_kwargs(self._fields, values)
+
+    def register_populate_callback(self, open_input: Input) -> None:
+        """Register callbacks that populate hooked fields when the wizard opens.
+
+        Parameters
+        ----------
+        open_input :
+            ``Input`` that fires when the wizard opens (``data`` becomes ``True``).
+            Typically ``wizard.open_input``.
+        """
+        for f in self._fields:
+            if f.hook is None:
+                continue
+            fid = _field_id(self._config_id, f)
+            hook = f.hook
+
+            @dash.callback(
+                Output(fid, "value"),
+                open_input,
+                *hook.required_states(),
+                prevent_initial_call=True,
+            )
+            def populate(is_open, *state_values, _hook=hook):
+                if not is_open:
+                    return dash.no_update
+                return _hook.get_default(*state_values)
+
+
+# --- public ---
 
 
 def build_config(config_id: str, fn: Callable) -> Config:
@@ -39,7 +131,10 @@ def build_config(config_id: str, fn: Callable) -> Config:
     config_id :
         Unique namespace for component IDs.
     fn :
-        Callable whose parameters (after the first) define the fields.
+        Callable whose parameters define the fields.
+        Parameters whose names start with ``_`` are skipped.
+        Parameters whose default is a :class:`FieldHook` instance get their
+        initial value populated at runtime via :meth:`Config.register_populate_callback`.
 
     Returns
     -------
@@ -47,6 +142,7 @@ def build_config(config_id: str, fn: Callable) -> Config:
         ``.div`` — ``html.Div`` with stacked labeled inputs ready to embed anywhere.
         ``.states`` — ``list[State]`` matching the fields (pass to a callback).
         ``.build_kwargs(values)`` — reconstruct a ``dict`` from callback values.
+        ``.register_populate_callback(open_input)`` — wire hook defaults on open.
     """
     fields = _get_fields(fn)
     states = _build_states(config_id, fields)
@@ -54,7 +150,7 @@ def build_config(config_id: str, fn: Callable) -> Config:
         style={"display": "flex", "flexDirection": "column", "gap": "8px"},
         children=[_build_field(config_id, f) for f in fields],
     )
-    return Config(div, states, fields)
+    return Config(div, states, fields, config_id)
 
 
 # --- internals ---
@@ -114,15 +210,20 @@ def _get_fields(fn: Callable) -> list[_Field]:
     for param in params:
         if param.name.startswith("_"):
             continue
+        raw_default = param.default if param.default is not inspect.Parameter.empty else None
+        hook = None
+        if isinstance(raw_default, FieldHook):
+            hook = raw_default
+            raw_default = None
         annotation = hints.get(param.name, param.annotation)
-        default = param.default if param.default is not inspect.Parameter.empty else None
-        field_type, args, optional = _infer_type(annotation, default)
+        field_type, args, optional = _infer_type(annotation, raw_default)
         fields.append(_Field(
             name=param.name,
             type=field_type,
-            default=default,
+            default=raw_default,
             args=args,
             optional=optional,
+            hook=hook,
         ))
 
     return fields
@@ -243,16 +344,16 @@ def _build_kwargs(fields: list[_Field], values: tuple) -> dict:
     """Consume values with an iterator — datetime fields consume two (date + time)."""
     it = iter(values)
     kwargs = {}
-    for field in fields:
-        if field.type == "datetime":
+    for f in fields:
+        if f.type == "datetime":
             date_val = next(it)
             time_val = next(it)
             if date_val is None:
-                kwargs[field.name] = None if field.optional else field.default
+                kwargs[f.name] = None if f.optional else f.default
             else:
-                kwargs[field.name] = datetime.fromisoformat(
+                kwargs[f.name] = datetime.fromisoformat(
                     f"{date_val}T{time_val or '00:00'}"
                 )
         else:
-            kwargs[field.name] = _coerce(field, next(it))
+            kwargs[f.name] = _coerce(f, next(it))
     return kwargs
