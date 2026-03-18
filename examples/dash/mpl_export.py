@@ -1,5 +1,3 @@
-import copy
-import io
 from datetime import date, datetime
 from typing import Literal
 
@@ -7,7 +5,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from dash import Dash, dcc, html
 
-from s5ndt.mpl_export import FromPlotly, mpl_export_button
+from s5ndt.mpl_export import FromPlotly, make_snapshot, mpl_export_button
 
 app = Dash(__name__)
 
@@ -15,7 +13,10 @@ app = Dash(__name__)
 
 graph = dcc.Graph(id="main-graph", figure=go.Figure(
     go.Scatter(x=[1, 2, 3, 4, 5], y=[4, 2, 5, 1, 3], mode="markers"),
-    layout={"title": {"text": "All-types example"}, "xaxis": {"title": {"text": "X axis"}}},
+    layout={
+        "title": {"text": "All-types example"},
+        "xaxis": {"title": {"text": "X axis"}},
+    },
 ))
 
 
@@ -23,8 +24,8 @@ graph = dcc.Graph(id="main-graph", figure=go.Figure(
 
 def full_renderer(
     _fig_data,
-    title: str = FromPlotly("layout.title.text", graph),
-    xlabel: str = FromPlotly("layout.xaxis.title.text", graph),
+    title: str = FromPlotly("layout.title.text", graph),  # type: ignore[assignment]
+    xlabel: str = FromPlotly("layout.xaxis.title.text", graph),  # type: ignore[assignment]
     dpi: int = 100,
     alpha: float = 0.8,
     show_grid: bool = True,
@@ -55,19 +56,15 @@ def full_renderer(
     return fig
 
 
-# --- renderer 2: snapshot — strips plotly title before snapshotting,
-#     pre-fills title/suptitle from the live figure so nothing is lost ---
+# --- renderer 2: snapshot with FromPlotly title — strips plotly title,
+#     pre-fills from the live figure ---
 
-def snapshot_renderer(
+def snapshot_with_title(
     _fig_data,
-    title: str = FromPlotly("layout.title.text", graph),
+    title: str = FromPlotly("layout.title.text", graph),  # type: ignore[assignment]
     suptitle: str = "",
 ):
-    plotly_fig = go.Figure(copy.deepcopy(_fig_data))
-    plotly_fig.update_layout(title_text="", margin_t=20)
-    img_bytes = plotly_fig.to_image(format="png")
-    img = plt.imread(io.BytesIO(img_bytes))
-
+    img = make_snapshot(_fig_data, strip_title=True)
     fig, ax = plt.subplots()
     ax.imshow(img)
     ax.axis("off")
@@ -83,8 +80,15 @@ def snapshot_renderer(
 app.layout = html.Div([
     graph,
     html.Div([
-        mpl_export_button(graph_id="main-graph", renderer=full_renderer),
-        mpl_export_button(graph_id="main-graph", renderer=snapshot_renderer),
+        mpl_export_button(
+            graph_id="main-graph", renderer=full_renderer, label="Export (custom)"
+        ),
+        mpl_export_button(
+            graph_id="main-graph",
+            renderer=snapshot_with_title,
+            label="Export (snapshot+title)",
+        ),
+        mpl_export_button(graph_id="main-graph", label="Export (snapshot)"),
     ], style={"display": "flex", "gap": "8px"}),
 ])
 

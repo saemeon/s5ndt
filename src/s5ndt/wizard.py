@@ -12,8 +12,20 @@ from dash import Input, Output, dcc, html
 
 @dataclass
 class Wizard:
+    """Return value of :func:`build_wizard`.
+
+    Attributes
+    ----------
+    div :
+        Self-contained component; place anywhere in the layout.
+    open_input :
+        ``Input(store_id, "data")`` — pass to
+        :meth:`Config.register_populate_callback` to populate hooked fields
+        when the wizard opens.
+    """
+
     div: html.Div
-    open_input: Input  # pass to Config.register_populate_callback
+    open_input: Input
 
 
 def build_wizard(
@@ -21,6 +33,7 @@ def build_wizard(
     body: Any,
     trigger_label: str = "Open",
     title: str = "",
+    header_actions: Any = None,
 ) -> Wizard:
     """Wrap *body* in a modal wizard popup.
 
@@ -34,6 +47,9 @@ def build_wizard(
         Label for the button that opens the wizard.
     title :
         Text shown in the dialog header.
+    header_actions :
+        Optional component(s) rendered in the header row between the title
+        and the ✕ close button.
 
     Returns
     -------
@@ -79,10 +95,16 @@ def build_wizard(
                 },
                 children=[
                     html.Div(
-                        style={"display": "flex", "justifyContent": "space-between"},
+                        style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"},
                         children=[
                             html.Strong(title),
-                            html.Button("✕", id=close_id),
+                            html.Div(
+                                style={"display": "flex", "gap": "4px", "alignItems": "center"},
+                                children=[
+                                    *([header_actions] if header_actions is not None else []),
+                                    html.Button("✕", id=close_id),
+                                ],
+                            ),
                         ],
                     ),
                     body,

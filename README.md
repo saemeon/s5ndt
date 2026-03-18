@@ -9,10 +9,10 @@
 [![prek](https://img.shields.io/badge/prek-checked-blue)](https://github.com/saemeon/prek)
 
 # s5ndt
-s5n dash tools — Plotly Dash utilities
 
+s5n dash tools — Plotly Dash utilities.
 
-**Full documentation at [saemeon.github.io/s5ndt](https://saemeon.github.io/s5ndt/)**
+**Documentation: [saemeon.github.io/s5ndt](https://saemeon.github.io/s5ndt/)**
 
 ## Installation
 
@@ -20,13 +20,18 @@ s5n dash tools — Plotly Dash utilities
 pip install s5ndt
 ```
 
-## Quick Start
+## Components
 
-```python
-import s5ndt
+| Component | Description |
+|-----------|-------------|
+| `mpl_export_button` | Matplotlib export wizard for `dcc.Graph` — modal with auto-generated fields, live preview, and PNG download |
+| `build_wizard` | Generic modal dialog |
+| `build_dropdown` | Generic anchored dropdown with click-outside-to-close |
+| `build_config` | Introspects a function signature into labeled Dash input fields |
+| `FromPlotly` | `FieldHook` that pre-fills a field from the live Plotly figure |
+| `FieldHook` | Base class for runtime field defaults derived from Dash component state |
 
-# example usage
-```
+**Supported field types:** `str`, `int`, `float`, `bool`, `date`, `datetime`, `Literal[...]`, `list[T]`, `tuple[T, ...]`, `T | None`
 
 ## License
 

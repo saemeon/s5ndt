@@ -12,7 +12,6 @@ from typing import Any, Callable, Literal, Union, get_args, get_origin, get_type
 import dash
 from dash import Input, Output, State, dcc, html
 
-
 # --- hook protocol ---
 
 
@@ -94,13 +93,9 @@ class Config:
         return _build_kwargs(self._fields, values)
 
     def register_populate_callback(self, open_input: Input) -> None:
-        """Register callbacks that populate hooked fields when the wizard opens.
+        """Register callbacks that populate hooked fields on first open.
 
-        Parameters
-        ----------
-        open_input :
-            ``Input`` that fires when the wizard opens (``data`` becomes ``True``).
-            Typically ``wizard.open_input``.
+        Existing values are preserved — fields are only populated when empty.
         """
         for f in self._fields:
             if f.hook is None:
@@ -111,13 +106,83 @@ class Config:
             @dash.callback(
                 Output(fid, "value"),
                 open_input,
+                State(fid, "value"),
                 *hook.required_states(),
                 prevent_initial_call=True,
             )
-            def populate(is_open, *state_values, _hook=hook):
+            def populate(is_open, current_value, *state_values, _hook=hook):
                 if not is_open:
                     return dash.no_update
+                if current_value not in (None, ""):
+                    return dash.no_update  # preserve user edits
                 return _hook.get_default(*state_values)
+
+    def register_restore_callback(self, restore_input: Input) -> None:
+        """Register a callback that resets all fields to their defaults.
+
+        Hooked fields call ``hook.get_default()``;
+        non-hooked fields revert to the static default from the signature.
+        """
+        # De-duplicated hook states
+        seen: set[tuple] = set()
+        hook_states: list[State] = []
+        for f in self._fields:
+            if f.hook:
+                for s in f.hook.required_states():
+                    key = (s.component_id, s.component_property)
+                    if key not in seen:
+                        seen.add(key)
+                        hook_states.append(s)
+
+        outputs: list[Output] = []
+        for f in self._fields:
+            fid = _field_id(self._config_id, f)
+            if f.type == "datetime":
+                outputs.append(Output(fid, "date", allow_duplicate=True))
+                outputs.append(Output(
+                    _time_field_id(self._config_id, f), "value", allow_duplicate=True
+                ))
+            elif f.type == "date":
+                outputs.append(Output(fid, "date", allow_duplicate=True))
+            else:
+                outputs.append(Output(fid, "value", allow_duplicate=True))
+
+        fields = self._fields
+
+        @dash.callback(*outputs, restore_input, *hook_states, prevent_initial_call=True)
+        def restore_all(n_clicks, *hook_state_values):
+            state_map = {
+                (s.component_id, s.component_property): v
+                for s, v in zip(hook_states, hook_state_values)
+            }
+            results: list[Any] = []
+            for f in fields:
+                if f.hook:
+                    hook = f.hook
+                    resolved = [
+                        state_map[(s.component_id, s.component_property)]
+                        for s in hook.required_states()
+                    ]
+                    val = hook.get_default(*resolved)
+                else:
+                    val = f.default
+
+                if f.type == "datetime":
+                    if isinstance(val, datetime):
+                        results.append(val.date().isoformat())
+                        results.append(val.strftime("%H:%M"))
+                    else:
+                        results.append(None)
+                        results.append(None)
+                elif f.type == "date":
+                    results.append(val.isoformat() if isinstance(val, date) else None)
+                elif f.type == "bool":
+                    results.append([f.name] if val else [])
+                elif f.type in ("list", "tuple"):
+                    results.append(", ".join(str(v) for v in val) if val else "")
+                else:
+                    results.append(val if val is not None else "")
+            return results
 
 
 # --- public ---
@@ -185,7 +250,9 @@ def _infer_type(annotation: Any, default: Any) -> tuple[str, tuple, bool]:
         return "datetime", (), False
     if annotation is date or isinstance(default, date):
         return "date", (), False
-    if annotation is int or (isinstance(default, int) and not isinstance(default, bool)):
+    if annotation is int or (
+        isinstance(default, int) and not isinstance(default, bool)
+    ):
         return "int", (), False
     if annotation is float or isinstance(default, float):
         return "float", (), False
@@ -210,21 +277,25 @@ def _get_fields(fn: Callable) -> list[_Field]:
     for param in params:
         if param.name.startswith("_"):
             continue
-        raw_default = param.default if param.default is not inspect.Parameter.empty else None
+        raw_default = (
+            param.default if param.default is not inspect.Parameter.empty else None
+        )
         hook = None
         if isinstance(raw_default, FieldHook):
             hook = raw_default
             raw_default = None
         annotation = hints.get(param.name, param.annotation)
         field_type, args, optional = _infer_type(annotation, raw_default)
-        fields.append(_Field(
-            name=param.name,
-            type=field_type,
-            default=raw_default,
-            args=args,
-            optional=optional,
-            hook=hook,
-        ))
+        fields.append(
+            _Field(
+                name=param.name,
+                type=field_type,
+                default=raw_default,
+                args=args,
+                optional=optional,
+                hook=hook,
+            )
+        )
 
     return fields
 
@@ -260,8 +331,16 @@ def _build_field(config_id: str, field: _Field) -> html.Div:
             date=field.default.isoformat() if isinstance(field.default, date) else None,
         )
     elif field.type == "datetime":
-        default_date = field.default.date().isoformat() if isinstance(field.default, datetime) else None
-        default_time = field.default.strftime("%H:%M") if isinstance(field.default, datetime) else None
+        default_date = (
+            field.default.date().isoformat()
+            if isinstance(field.default, datetime)
+            else None
+        )
+        default_time = (
+            field.default.strftime("%H:%M")
+            if isinstance(field.default, datetime)
+            else None
+        )
         component = html.Div(
             style={"display": "flex", "gap": "8px", "alignItems": "center"},
             children=[
@@ -282,6 +361,7 @@ def _build_field(config_id: str, field: _Field) -> html.Div:
             type="number",
             step=1 if field.type == "int" else "any",
             value=field.default,
+            debounce=True,
         )
     elif field.type in ("list", "tuple"):
         if field.type == "tuple":
@@ -294,6 +374,7 @@ def _build_field(config_id: str, field: _Field) -> html.Div:
             type="text",
             value=", ".join(str(v) for v in field.default) if field.default else "",
             placeholder=placeholder,
+            debounce=True,
         )
     elif field.type == "literal":
         component = dcc.Dropdown(
@@ -307,6 +388,7 @@ def _build_field(config_id: str, field: _Field) -> html.Div:
             type="text",
             value=str(field.default) if field.default is not None else "",
             placeholder="",
+            debounce=True,
         )
 
     return html.Div([label, component])
