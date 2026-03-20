@@ -2,7 +2,9 @@
 # Distributed under the terms of the MIT License.
 
 
+from importlib.metadata import PackageNotFoundError, version
+
 try:
-    from ._version import __version__
-except ImportError:
+    __version__ = version("mypackage")
+except PackageNotFoundError:
     __version__ = "unknown"
